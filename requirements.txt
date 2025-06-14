@@ -1,5 +1,7 @@
 streamlit
 pandas
 matplotlib
-xlsxwriter
+numpy
 openpyxl
+xlsxwriter
+scikit-learn
