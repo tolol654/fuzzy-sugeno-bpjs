@@ -1,0 +1,1 @@
+(kode aplikasi terbaru di atas, disingkat untuk tampilan)
