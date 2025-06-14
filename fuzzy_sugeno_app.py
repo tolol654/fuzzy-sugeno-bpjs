@@ -4,10 +4,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 from io import BytesIO
 import base64
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 
-st.set_page_config(page_title="Prediksi BPJS PBI - FIS Sugeno", layout="wide")
+st.set_page_config(page_title="Prediksi BPJS PBI - Fuzzy Sugeno & Mamdani", layout="wide")
 
-# --- Tambahkan background anime cyberpunk ---
+# --- Background Cyberpunk ---
 def add_bg_from_url():
     st.markdown(
         f"""
@@ -55,124 +57,123 @@ def fuzzify_jamkesda(y):
     else:
         return 0, 1
 
-# --- FIS Sugeno ---
+# --- Sugeno ---
 def sugeno_output(bpbi, jamkesda, d_sedikit=148805, d_banyak=149840):
     turun, naik = fuzzify_bpbi(bpbi)
     sedikit, banyak = fuzzify_jamkesda(jamkesda)
-
     alpha1 = min(turun, sedikit)
     alpha2 = min(turun, banyak)
     alpha3 = min(naik, sedikit)
     alpha4 = min(naik, banyak)
-
     numerator = (alpha1 * d_sedikit + alpha2 * d_sedikit + alpha3 * d_banyak + alpha4 * d_banyak)
     denominator = alpha1 + alpha2 + alpha3 + alpha4
-
     return numerator / denominator if denominator != 0 else 0
 
-# --- Sidebar Parameter ---
-st.sidebar.header("⚙️ Pengaturan Fuzzy")
-d_sedikit = st.sidebar.number_input("Nilai PBI Sedikit (konsekuen)", value=148805)
-d_banyak = st.sidebar.number_input("Nilai PBI Banyak (konsekuen)", value=149840)
+# --- Mamdani (simulasi: ambil rata-rata dari 2 nilai berdasarkan fuzzy max) ---
+def mamdani_output(bpbi, jamkesda):
+    turun, naik = fuzzify_bpbi(bpbi)
+    sedikit, banyak = fuzzify_jamkesda(jamkesda)
+    rules = [min(turun, sedikit), min(turun, banyak), min(naik, sedikit), min(naik, banyak)]
+    outputs = [148805, 148805, 149840, 149840]
+    max_val = max(rules)
+    return np.mean([out for r, out in zip(rules, outputs) if r == max_val])
 
-# --- Upload File ---
-st.sidebar.subheader("📥 Upload File")
-uploaded_file = st.sidebar.file_uploader("Upload CSV atau Excel", type=["csv", "xlsx"])
-
-if uploaded_file:
-    if uploaded_file.name.endswith(".csv"):
-        df_input = pd.read_csv(uploaded_file)
-    else:
-        df_input = pd.read_excel(uploaded_file)
-    st.sidebar.success("File berhasil diunggah!")
-else:
-    df_input = pd.DataFrame({
+# --- Load Data ---
+@st.cache_data
+def get_default_data():
+    return pd.DataFrame({
         "Bulan": ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"],
         "PBI Asli": [148947, 148907, 148868, 148823, 148827, 148805, 149097, 149150, 149361, 149345, 149733, 149840],
         "BPBI": [341886, 340532, 342814, 347362, 349364, 349993, 350033, 349978, 352938, 357049, 359199, 360936],
         "Jamkesda": [42747, 42719, 42715, 42708, 42652, 42609, 42644, 42610, 42558, 42201, 41924, 42701],
     })
 
-# --- Input Manual Satuan ---
-st.subheader("📝 Input Data Bulan Satuan")
-with st.form("input_form"):
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        bulan_manual = st.text_input("Bulan", "Bulan Baru")
-    with col2:
-        bpbi_manual = st.number_input("BPBI", value=340000)
-    with col3:
-        jamkesda_manual = st.number_input("Jamkesda", value=42000)
-    submitted = st.form_submit_button("Prediksi")
+# --- Sidebar ---
+st.sidebar.title("⚙️ Pengaturan")
+metode = st.sidebar.radio("Metode Fuzzy", ["Sugeno", "Mamdani"])
+d_sedikit = st.sidebar.number_input("Nilai PBI Sedikit", value=148805)
+d_banyak = st.sidebar.number_input("Nilai PBI Banyak", value=149840)
+uploaded = st.sidebar.file_uploader("📥 Upload Data CSV/Excel", type=["csv", "xlsx"])
 
-    if submitted:
-        hasil_manual = sugeno_output(bpbi_manual, jamkesda_manual, d_sedikit, d_banyak)
-        st.success(f"Hasil Prediksi PBI untuk {bulan_manual}: {hasil_manual:.2f}")
+if uploaded:
+    df = pd.read_csv(uploaded) if uploaded.name.endswith(".csv") else pd.read_excel(uploaded)
+else:
+    df = get_default_data()
 
-# --- Input Data Bulanan Tabel ---
-st.subheader("📋 Input atau Edit Data Bulanan")
-edited_df = st.data_editor(df_input, num_rows="dynamic", use_container_width=True)
+st.title("📊 Prediksi Jumlah Peserta BPJS PBI")
+st.markdown("""Menggunakan metode **Fuzzy Inference System** dan **Regresi Linier** sebagai pembanding.""")
 
 # --- Proses Prediksi ---
 results = []
-for i, row in edited_df.iterrows():
-    bulan = row.get("Bulan", f"Bulan-{i+1}")
+for i, row in df.iterrows():
+    bulan = row["Bulan"]
     try:
         pbi_asli = float(row["PBI Asli"])
         bpbi = float(row["BPBI"])
         jamkesda = float(row["Jamkesda"])
-        pred = sugeno_output(bpbi, jamkesda, d_sedikit, d_banyak)
-        error = abs(pbi_asli - pred)
-        mape = (error / pbi_asli) * 100
-        results.append([bulan, pbi_asli, round(pred, 2), round(mape, 2), error])
+        pred_fuzzy = sugeno_output(bpbi, jamkesda, d_sedikit, d_banyak) if metode == "Sugeno" else mamdani_output(bpbi, jamkesda)
+        results.append([bulan, pbi_asli, pred_fuzzy, bpbi, jamkesda])
     except:
         continue
 
-df_result = pd.DataFrame(results, columns=["Bulan", "PBI Asli", "PBI Prediksi", "MAPE", "Error"])
-st.subheader("📄 Hasil Prediksi")
-st.dataframe(df_result, use_container_width=True)
+res_df = pd.DataFrame(results, columns=["Bulan", "PBI Asli", "Prediksi Fuzzy", "BPBI", "Jamkesda"])
 
-# --- Visualisasi ---
-if not df_result.empty:
-    st.subheader("📈 Grafik Prediksi vs Aktual")
-    fig1, ax1 = plt.subplots()
-    ax1.plot(df_result["Bulan"], df_result["PBI Asli"], marker='o', label="PBI Asli")
-    ax1.plot(df_result["Bulan"], df_result["PBI Prediksi"], marker='x', label="PBI Prediksi")
-    ax1.set_title("Prediksi vs Realisasi")
-    ax1.set_xlabel("Bulan")
-    ax1.set_ylabel("Jumlah Peserta")
-    ax1.legend()
-    ax1.grid(True)
-    st.pyplot(fig1)
+# --- Regresi Linier ---
+X = res_df[["BPBI", "Jamkesda"]]
+y = res_df["PBI Asli"]
+reg = LinearRegression().fit(X, y)
+res_df["Prediksi Regresi"] = reg.predict(X)
 
-    st.subheader("📊 Grafik MAPE per Bulan")
-    fig2, ax2 = plt.subplots()
-    ax2.bar(df_result["Bulan"], df_result["MAPE"], color='skyblue')
-    avg_mape = df_result["MAPE"].mean()
-    ax2.axhline(y=avg_mape, color='red', linestyle='--', label=f"Rata-rata: {avg_mape:.2f}%")
-    ax2.legend()
-    ax2.set_ylabel("MAPE (%)")
-    ax2.set_title("Tingkat Kesalahan (MAPE)")
-    st.pyplot(fig2)
+# --- Evaluasi ---
+res_df["MAPE"] = abs(res_df["PBI Asli"] - res_df["Prediksi Fuzzy"]) / res_df["PBI Asli"] * 100
+rmse = mean_squared_error(res_df["PBI Asli"], res_df["Prediksi Fuzzy"], squared=False)
+mae = mean_absolute_error(res_df["PBI Asli"], res_df["Prediksi Fuzzy"])
 
-    st.subheader("📉 Grafik Error Absolut")
-    fig3, ax3 = plt.subplots()
-    ax3.plot(df_result["Bulan"], df_result["Error"], color='orange', marker='s', label="Error Absolut")
-    ax3.set_title("Error Absolut per Bulan")
-    ax3.set_ylabel("|Error|")
-    ax3.grid(True)
-    st.pyplot(fig3)
+# --- Tampilkan Data ---
+st.subheader("📋 Hasil Prediksi")
+st.dataframe(res_df, use_container_width=True)
 
-    st.success(f"🎯 Rata-rata MAPE: {avg_mape:.2f}% → Akurasi: {100 - avg_mape:.2f}%")
+# --- Grafik ---
+st.subheader("📈 Grafik Perbandingan Model")
+fig, ax = plt.subplots()
+ax.plot(res_df["Bulan"], res_df["PBI Asli"], marker='o', label="Asli")
+ax.plot(res_df["Bulan"], res_df["Prediksi Fuzzy"], marker='x', label="Fuzzy")
+ax.plot(res_df["Bulan"], res_df["Prediksi Regresi"], marker='s', label="Regresi")
+ax.legend()
+ax.grid()
+ax.set_ylabel("Jumlah Peserta")
+st.pyplot(fig)
 
-    # --- Download Excel ---
-    st.subheader("📤 Unduh Hasil Prediksi")
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df_result.to_excel(writer, index=False, sheet_name="Hasil Prediksi")
-    st.download_button(
-        label="📥 Unduh sebagai Excel",
-        data=output.getvalue(),
-        file_name="hasil_prediksi_bpjs.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+# --- Histogram Error ---
+st.subheader("📊 Sebaran Error (Fuzzy vs Asli)")
+fig2, ax2 = plt.subplots()
+errors = res_df["PBI Asli"] - res_df["Prediksi Fuzzy"]
+ax2.hist(errors, bins=10, color='skyblue', edgecolor='black')
+ax2.set_title("Distribusi Error")
+ax2.set_xlabel("Error")
+ax2.set_ylabel("Frekuensi")
+st.pyplot(fig2)
+
+# --- Rangkuman Evaluasi ---
+st.subheader("📏 Evaluasi Model")
+st.markdown(f"- RMSE (Fuzzy): **{rmse:.2f}**")
+st.markdown(f"- MAE (Fuzzy): **{mae:.2f}**")
+st.markdown(f"- Rata-rata MAPE: **{res_df['MAPE'].mean():.2f}%**")
+
+# --- Aturan Fuzzy ---
+st.subheader("📘 Aturan Fuzzy")
+st.markdown("""
+**Jika:**
+- BPBI *Turun* & Jamkesda *Sedikit* → PBI *Sedikit*  
+- BPBI *Turun* & Jamkesda *Banyak* → PBI *Sedikit*  
+- BPBI *Naik* & Jamkesda *Sedikit* → PBI *Banyak*  
+- BPBI *Naik* & Jamkesda *Banyak* → PBI *Banyak*
+""")
+
+# --- Unduh Hasil ---
+st.subheader("📥 Unduh Data")
+buffer = BytesIO()
+with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+    res_df.to_excel(writer, index=False, sheet_name="Prediksi")
+    writer.save()
+st.download_button("📄 Unduh sebagai Excel", data=buffer.getvalue(), file_name="hasil_prediksi.xlsx")
